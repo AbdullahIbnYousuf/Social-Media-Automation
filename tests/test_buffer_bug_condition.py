@@ -93,55 +93,65 @@ class TestBufferBugCondition(unittest.TestCase):
             # This assertion will fail on unfixed code, confirming the bug exists
             self.fail(f"Bug confirmed: REST API authentication failed with HTTP 401 for content: '{content[:50]}...'")
 
-    def test_rest_api_request_format_verification(self) -> None:
+    def test_graphql_api_request_format_verification(self) -> None:
         """
-        Verify the current implementation uses REST API format that causes the bug.
+        Verify the current implementation uses GraphQL API request format.
         
         This test inspects the actual request being made to confirm:
-        - Uses REST API endpoint (https://api.bufferapp.com/1/updates/create.json)
-        - Uses application/x-www-form-urlencoded content type
-        - Uses profile_ids[] array parameter format
+        - Uses GraphQL endpoint
+        - Uses application/json content type
+        - Sends GraphQL query and variables payload
         - Uses Bearer token authentication
-        
-        This test documents the root cause of the bug.
         """
         test_content = "Test content for format verification"
         
         # Mock the requests.post to capture the actual request details
         with patch('engine.requests.post') as mock_post:
-            # Configure mock to raise HTTP 401 error (simulating Buffer's response)
+            # Configure mock to return a successful GraphQL response body.
             mock_response = MagicMock()
-            mock_response.status_code = 401
-            mock_response.text = "OIDC tokens are not accepted for direct API access"
+            mock_response.status_code = 200
+            mock_response.text = '{"data": {"createPost": {"post": {"id": "abc123"}}}}'
+            mock_response.json.return_value = {
+                "data": {
+                    "createPost": {
+                        "post": {
+                            "id": "abc123"
+                        }
+                    }
+                }
+            }
             mock_post.return_value = mock_response
             
-            try:
-                dispatch_payload_to_buffer(test_content)
-            except requests.exceptions.HTTPError:
-                pass  # Expected to fail
+            dispatch_payload_to_buffer(test_content)
             
-            # Verify the request was made with REST API format
+            # Verify the request was made with GraphQL format
             self.assertTrue(mock_post.called, "requests.post should have been called")
             
             call_args = mock_post.call_args
             
-            # Verify REST API endpoint
+            # Verify GraphQL endpoint
             url = call_args[0][0] if call_args[0] else call_args[1].get('url')
-            self.assertEqual(url, "https://api.bufferapp.com/1/updates/create.json",
-                           f"Expected REST API endpoint, got: {url}")
+            self.assertEqual(url, "https://api.buffer.com/graphql",
+                           f"Expected GraphQL endpoint, got: {url}")
             
-            # Verify headers include Bearer token and form-urlencoded content type
+            # Verify headers include Bearer token and JSON content type
             headers = call_args[1].get('headers', {})
             self.assertIn("Authorization", headers)
             self.assertTrue(headers["Authorization"].startswith("Bearer "),
                           f"Expected Bearer token auth, got: {headers.get('Authorization')}")
-            self.assertEqual(headers.get("Content-Type"), "application/x-www-form-urlencoded",
-                           f"Expected form-urlencoded content type, got: {headers.get('Content-Type')}")
+            self.assertEqual(headers.get("Content-Type"), "application/json",
+                           f"Expected JSON content type, got: {headers.get('Content-Type')}")
             
-            # Verify payload uses profile_ids[] array format
-            payload = call_args[1].get('data', {})
-            self.assertIn("profile_ids[]", payload,
-                         f"Expected profile_ids[] parameter, got: {list(payload.keys())}")
+            # Verify payload uses GraphQL query + variables structure.
+            payload = call_args[1].get('json', {})
+            self.assertIn("query", payload, f"Expected GraphQL query, got keys: {list(payload.keys())}")
+            self.assertIn("variables", payload, f"Expected GraphQL variables, got keys: {list(payload.keys())}")
+
+            variables = payload.get("variables", {})
+            input_data = variables.get("input", {})
+            self.assertEqual(input_data.get("profileId"), "test_profile_67890")
+            self.assertEqual(input_data.get("text"), test_content)
+            self.assertEqual(input_data.get("shorten"), False)
             
             # Verify timeout is set
             timeout = call_args[1].get('timeout')

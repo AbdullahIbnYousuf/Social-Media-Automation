@@ -3,7 +3,6 @@ import sys
 import sqlite3
 import logging
 from pathlib import Path
-from typing import Optional
 
 import requests
 from dotenv import load_dotenv
@@ -20,6 +19,17 @@ except Exception:
 LOG_PATH = Path("logs") / "pipeline.log"
 DB_PATH = Path("src") / "pipeline.db"
 AGENT_PROMPT_PATH = Path("agent.md")
+BUFFER_GRAPHQL_URL = os.getenv("BUFFER_GRAPHQL_URL", "https://api.buffer.com/graphql")
+
+CREATE_POST_MUTATION = """
+mutation CreatePost($input: CreatePostInput!) {
+    createPost(input: $input) {
+        post {
+            id
+        }
+    }
+}
+""".strip()
 
 
 def configure_logging() -> None:
@@ -100,15 +110,21 @@ def generate_optimized_copy(raw_idea: str, platform: str, system_directive: str)
 
 @retry(wait=wait_exponential(multiplier=1, min=4, max=10), stop=stop_after_attempt(3), reraise=True)
 def dispatch_payload_to_buffer(content: str) -> None:
-    """Send the text payload to Buffer using the configured profile."""
+    """Send the text payload to Buffer using the GraphQL API endpoint."""
     token = os.getenv("BUFFER_ACCESS_TOKEN")
     profile = os.getenv("BUFFER_PROFILE_ID")
-    url = "https://api.bufferapp.com/1/updates/create.json"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/x-www-form-urlencoded"}
-    payload = {"text": content, "profile_ids[]": [profile], "shorten": "false"}
-    res = requests.post(url, data=payload, headers=headers, timeout=15)
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = {
+        "query": CREATE_POST_MUTATION,
+        "variables": {"input": {"profileId": profile, "text": content, "shorten": False}},
+    }
+    res = requests.post(BUFFER_GRAPHQL_URL, json=payload, headers=headers, timeout=15)
     if res.status_code != 200:
         raise requests.exceptions.HTTPError(f"Buffer API error {res.status_code}: {res.text}")
+
+    body = res.json()
+    if body.get("errors"):
+        raise requests.exceptions.HTTPError(f"Buffer GraphQL errors: {body['errors']}")
 
 
 def execute_pipeline_cycle() -> None:

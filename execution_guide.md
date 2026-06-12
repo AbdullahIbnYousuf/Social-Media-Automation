@@ -94,6 +94,7 @@ Open your `.env` configuration file and pass your explicit environment configura
 GEMINI_API_KEY=AIzaSyYourValidatedStudioDeveloperAPIKeyHere
 BUFFER_ACCESS_TOKEN=tok_yourSecuredOauthBearerTokenForBufferAPI
 BUFFER_PROFILE_ID=664fccYourSpecificTargetChannelProfileID
+BUFFER_GRAPHQL_URL=https://api.buffer.com/graphql
 ```
 
 ---
@@ -129,8 +130,19 @@ load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY")
 BUFFER_TOKEN = os.getenv("BUFFER_ACCESS_TOKEN")
 BUFFER_PROFILE = os.getenv("BUFFER_PROFILE_ID")
+BUFFER_GRAPHQL_URL = os.getenv("BUFFER_GRAPHQL_URL", "https://api.buffer.com/graphql")
 DB_PATH = "src/pipeline.db"
 AGENT_PROMPT_PATH = "agent.md"
+
+CREATE_POST_MUTATION = """
+mutation CreatePost($input: CreatePostInput!) {
+    createPost(input: $input) {
+        post {
+            id
+        }
+    }
+}
+""".strip()
 
 if not all([API_KEY, BUFFER_TOKEN, BUFFER_PROFILE]):
     logging.critical("Missing system critical operational environments within .env layout.")
@@ -168,20 +180,28 @@ def generate_optimized_copy(raw_idea: str, platform: str, system_directive: str)
 
 @retry(wait=wait_exponential(multiplier=1, min=4, max=10), stop=stop_after_attempt(3), reraise=True)
 def dispatch_payload_to_buffer(content: str) -> None:
-    """Pushes processed text variants safely over the web to Buffer profiles."""
-    url = "https://api.bufferapp.com/1/updates/create.json"
+    """Pushes processed text variants safely over Buffer's GraphQL API."""
     headers = {
         "Authorization": f"Bearer {BUFFER_TOKEN}",
-        "Content-Type": "application/x-www-form-urlencoded"
+        "Content-Type": "application/json"
     }
     payload = {
-        "text": content,
-        "profile_ids[]": [BUFFER_PROFILE],
-        "shorten": "false"
+        "query": CREATE_POST_MUTATION,
+        "variables": {
+            "input": {
+                "profileId": BUFFER_PROFILE,
+                "text": content,
+                "shorten": False
+            }
+        }
     }
-    res = requests.post(url, data=payload, headers=headers, timeout=15)
+    res = requests.post(BUFFER_GRAPHQL_URL, json=payload, headers=headers, timeout=15)
     if res.status_code != 200:
         raise requests.exceptions.HTTPError(f"Server rejection status {res.status_code}: {res.text}")
+
+    response_body = res.json()
+    if response_body.get("errors"):
+        raise requests.exceptions.HTTPError(f"GraphQL mutation rejected: {response_body['errors']}")
 
 def execute_pipeline_cycle():
     """Orchestrates transaction iterations via isolated sqlite context loops safely."""
